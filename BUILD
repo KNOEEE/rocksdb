@@ -534,3 +534,22 @@ cc_binary(
   ],
   # linkstatic = True,
 )
+
+cc_binary(
+  name = "t",
+  srcs = [
+    "utilities/object_registry_test.cc"
+  ],
+  deps = [
+    "@googletest//:gtest",
+    "@googletest//:gtest_main",
+    ":rocksdb"
+  ],
+  copts = [
+      "-std=c++17",
+      # Disable stack protection to deal with 
+      # "ld.lld: error: undefined symbol: __stack_chk_guard"
+      "-fno-stack-protector",  
+  ],
+  # linkstatic = True,
+)

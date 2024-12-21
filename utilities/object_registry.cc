@@ -215,9 +215,9 @@ std::shared_ptr<ObjectLibrary> &ObjectLibrary::Default() {
 
 ObjectRegistry::ObjectRegistry(const std::shared_ptr<ObjectLibrary> &library) {
   libraries_.push_back(library);
-  // for (const auto &b : builtins_) {
-  //   RegisterPlugin(b.first, b.second);
-  // }
+  for (const auto &b : builtins_) {
+    RegisterPlugin(b.first, b.second);
+  }
 }
 
 std::shared_ptr<ObjectRegistry> ObjectRegistry::Default() {
