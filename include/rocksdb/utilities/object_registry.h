@@ -573,7 +573,9 @@ class ObjectRegistry {
   // searching for entries.
   std::vector<std::shared_ptr<ObjectLibrary>> libraries_;
   std::vector<std::string> plugins_;
-  static std::unordered_map<std::string, RegistrarFunc> builtins_;
+  // This is bug since builtins_ has not be defined
+  // see https://stackoverflow.com/questions/272900/undefined-reference-to-static-class-member
+  // static std::unordered_map<std::string, RegistrarFunc> builtins_;
   std::map<std::string, std::weak_ptr<Customizable>> managed_objects_;
   std::shared_ptr<ObjectRegistry> parent_;
   mutable std::mutex objects_mutex_;  // Mutex for managed objects
