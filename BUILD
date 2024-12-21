@@ -45,6 +45,7 @@ cc_library(
         "db/blob/blob_log_format.cc",
         "db/blob/blob_log_sequential_reader.cc",
         "db/blob/blob_log_writer.cc",
+        "db/blob/blob_source.cc",
         "db/blob/prefetch_buffer_collection.cc",
         "db/builder.cc",
         "db/c.cc",
@@ -106,6 +107,7 @@ cc_library(
         "db/version_set.cc",
         "db/wal_edit.cc",
         "db/wal_manager.cc",
+        "db/wide/wide_columns.cc",
         "db/write_batch.cc",
         "db/write_batch_base.cc",
         "db/write_controller.cc",
@@ -165,6 +167,7 @@ cc_library(
         "options/configurable.cc",
         "options/customizable.cc",
         "options/db_options.cc",
+        "options/offpeak_time_info.cc",
         "options/options.cc",
         "options/options_helper.cc",
         "options/options_parser.cc",
@@ -218,6 +221,7 @@ cc_library(
         "table/table_properties.cc",
         "table/two_level_iterator.cc",
         "table/unique_id.cc",
+        "test_util/sync_point.cc",
         "tools/block_cache_analyzer/block_cache_trace_analyzer.cc",
         "tools/db_bench_tool.cc",
         "tools/dump/db_dump_tool.cc",
@@ -232,6 +236,7 @@ cc_library(
         "trace_replay/trace_record_result.cc",
         "trace_replay/trace_record.cc",
         "trace_replay/trace_replay.cc",
+        "util/cleanable.cc",
         "util/coding.cc",
         "util/compaction_job_stats_impl.cc",
         "util/comparator.cc",
@@ -250,6 +255,7 @@ cc_library(
         "util/string_util.cc",
         "util/thread_local.cc",
         "util/threadpool_imp.cc",
+        "util/udt_util.cc",
         "util/xxhash.cc",
         "utilities/blob_db/blob_compaction_filter.cc",
         "utilities/blob_db/blob_db.cc",
@@ -362,11 +368,12 @@ cc_library(
     linkopts = [
         "-lm",
         "-lpthread",
+        "-lssp",
     ],
     deps = [
         "@googletest//:gtest",
         "@googletest//:gtest_main",
-        "@snappy//:snappy",
+        # "@snappy//:snappy",
         "@gflags//:gflags",
 
         # "//external:gflags",
@@ -389,4 +396,21 @@ refresh_compile_commands(
     },
     exclude_headers = "external",
     exclude_external_sources = True,
+)
+
+cc_binary(
+  name = "demo",
+  srcs = [
+    "examples/simple_example.cc"
+  ],
+  deps = [
+    ":rocksdb"
+  ],
+  copts = [
+      "-std=c++17",
+      # Disable stack protection to deal with 
+      # "ld.lld: error: undefined symbol: __stack_chk_guard"
+      "-fno-stack-protector",  
+  ],
+  # linkstatic = True,
 )
