@@ -1208,6 +1208,68 @@ TEST_F(DBErrorHandlingFSTest, CorruptionError) {
   Destroy(options);
 }
 
+TEST_F(DBErrorHandlingFSTest, RecoverError) {
+  // setenv("KEEP_DB", "1", 0);
+  Options options = GetOptions(OptionConfig::kUncompressed);
+  options.create_if_missing = true;
+  options.statistics = CreateDBStatistics();
+  options.create_missing_column_families = true;
+  std::shared_ptr<SstFileManager> sst_file_manager(
+      NewSstFileManager(options.env));
+  options.sst_file_manager = sst_file_manager;
+  // options.max_bgerror_resume_count = 0;  // disable auto recovery
+  std::shared_ptr<ErrorHandlerFSListener> listener =
+      std::make_shared<ErrorHandlerFSListener>();
+  listener->EnableAutoRecovery();
+  options.listeners.emplace_back(listener);
+  
+  Status s;
+  DestroyAndReopen(options);
+
+  sst_file_manager->SetMaxAllowedSpaceUsage(2 << 10);
+  WriteOptions write_options = WriteOptions();
+  write_options.disableWAL = true;
+  // 2300B
+  for (int i = 0; i < 50; i++) {
+    ASSERT_OK(Put(Key(i), Key(i) + "v", write_options));
+  }
+  s = dbfull()->Flush(FlushOptions());
+  // ASSERT_OK(s);
+  // std::cout << sst_file_manager->GetTotalSize() << std::endl;
+  ASSERT_GT(sst_file_manager->GetTotalSize(), 2 << 10);
+  ASSERT_EQ(s.severity(), ROCKSDB_NAMESPACE::Status::Severity::kHardError);
+  // std::cout << s.code() << " " << s.subcode() << std::endl;
+  ASSERT_EQ(s.code(), Status::Code::kIOError);
+  ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
+  ASSERT_EQ(sst_file_manager->IsMaxAllowedSpaceReached(), true);
+  ASSERT_EQ(sst_file_manager->IsMaxAllowedSpaceReachedIncludingCompactions(), 
+            true);
+  s = Put(Key(50), Key(50) + "v", write_options);
+  ASSERT_EQ(s.code(), Status::Code::kIOError);
+  ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
+  sst_file_manager->SetMaxAllowedSpaceUsage(100 << 10);
+  // s = dbfull()->Resume();
+  // ASSERT_OK(s);
+
+  ASSERT_EQ(listener->WaitForRecovery(5000000), true);
+
+  s = Put(Key(50), Key(50) + "v", write_options);
+  ASSERT_OK(s);
+
+  s = dbfull()->Flush(FlushOptions());
+
+  std::cout << sst_file_manager->GetTotalSize() << std::endl;
+  std::cout << sst_file_manager->IsMaxAllowedSpaceReached() << std::endl;
+  std::cout << sst_file_manager->IsMaxAllowedSpaceReachedIncludingCompactions() << std::endl;
+  ASSERT_OK(s);
+  Reopen(options);
+
+  ASSERT_EQ(Key(50) + "v", Get(Key(50)));
+
+  Close();
+  // DestroyDB(dbname_, options).PermitUncheckedError();
+}
+
 TEST_F(DBErrorHandlingFSTest, AutoRecoverFlushError) {
   if (mem_env_ != nullptr) {
     ROCKSDB_GTEST_SKIP("Test requires non-mock environment");

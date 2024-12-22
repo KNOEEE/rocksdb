@@ -538,11 +538,29 @@ cc_binary(
 cc_binary(
   name = "t",
   srcs = [
-    "utilities/object_registry_test.cc"
+    # "db/db_io_failure_test.cc",
+    "db/error_handler_fs_test.cc",
   ],
   deps = [
     "@googletest//:gtest",
     "@googletest//:gtest_main",
+    ":rocksdb"
+  ],
+  copts = [
+      "-std=c++17",
+      # Disable stack protection to deal with 
+      # "ld.lld: error: undefined symbol: __stack_chk_guard"
+      "-fno-stack-protector",  
+  ],
+  # linkstatic = True,
+)
+
+cc_binary(
+  name = "easy",
+  srcs = [
+    "knoe/easy.cc"
+  ],
+  deps = [
     ":rocksdb"
   ],
   copts = [
