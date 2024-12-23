@@ -1217,10 +1217,14 @@ TEST_F(DBErrorHandlingFSTest, RecoverError) {
   std::shared_ptr<SstFileManager> sst_file_manager(
       NewSstFileManager(options.env));
   options.sst_file_manager = sst_file_manager;
-  // options.max_bgerror_resume_count = 0;  // disable auto recovery
+  // DBOptions::max_bgerror_resume_count cannot 
+  // diasble auto recovery for SpaceLimit
   std::shared_ptr<ErrorHandlerFSListener> listener =
       std::make_shared<ErrorHandlerFSListener>();
-  listener->EnableAutoRecovery();
+  // auto recover will check space with max_write_buffer_size
+  // so we use manual recover 
+  // also we can set SetMaxAllowedSpaceUsage to a large value and auto recovery
+  listener->EnableAutoRecovery(false);
   options.listeners.emplace_back(listener);
   
   Status s;
@@ -1236,7 +1240,8 @@ TEST_F(DBErrorHandlingFSTest, RecoverError) {
   s = dbfull()->Flush(FlushOptions());
   // ASSERT_OK(s);
   // std::cout << sst_file_manager->GetTotalSize() << std::endl;
-  ASSERT_GT(sst_file_manager->GetTotalSize(), 2 << 10);
+  uint64_t db_size = sst_file_manager->GetTotalSize();
+  ASSERT_GT(db_size, 2 << 10);
   ASSERT_EQ(s.severity(), ROCKSDB_NAMESPACE::Status::Severity::kHardError);
   // std::cout << s.code() << " " << s.subcode() << std::endl;
   ASSERT_EQ(s.code(), Status::Code::kIOError);
@@ -1248,8 +1253,8 @@ TEST_F(DBErrorHandlingFSTest, RecoverError) {
   ASSERT_EQ(s.code(), Status::Code::kIOError);
   ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
   sst_file_manager->SetMaxAllowedSpaceUsage(100 << 10);
-  // s = dbfull()->Resume();
-  // ASSERT_OK(s);
+  s = dbfull()->Resume();
+  ASSERT_OK(s);
 
   ASSERT_EQ(listener->WaitForRecovery(5000000), true);
 
@@ -1258,16 +1263,17 @@ TEST_F(DBErrorHandlingFSTest, RecoverError) {
 
   s = dbfull()->Flush(FlushOptions());
 
-  std::cout << sst_file_manager->GetTotalSize() << std::endl;
-  std::cout << sst_file_manager->IsMaxAllowedSpaceReached() << std::endl;
-  std::cout << sst_file_manager->IsMaxAllowedSpaceReachedIncludingCompactions() << std::endl;
+  ASSERT_LT(db_size, sst_file_manager->GetTotalSize());
+  ASSERT_EQ(sst_file_manager->IsMaxAllowedSpaceReached(), false);
+  ASSERT_EQ(sst_file_manager->IsMaxAllowedSpaceReachedIncludingCompactions(), 
+            false);
   ASSERT_OK(s);
   Reopen(options);
 
   ASSERT_EQ(Key(50) + "v", Get(Key(50)));
 
-  Close();
-  // DestroyDB(dbname_, options).PermitUncheckedError();
+  // Close();
+  DestroyDB(dbname_, options).PermitUncheckedError();
 }
 
 TEST_F(DBErrorHandlingFSTest, AutoRecoverFlushError) {
