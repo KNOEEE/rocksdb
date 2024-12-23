@@ -558,7 +558,8 @@ cc_binary(
 cc_binary(
   name = "easy",
   srcs = [
-    "knoe/easy.cc"
+    # "knoe/easy.cc",
+    "knoe/recover_error_test.cpp",
   ],
   deps = [
     ":rocksdb"
