@@ -484,6 +484,7 @@ cc_library(
         "-std=c++17",
         "-mpclmul",
         "-O2",
+        "-g",
     ],
     linkopts = [
         "-lm",
@@ -538,6 +539,7 @@ cc_binary(
 cc_binary(
   name = "t",
   srcs = [
+    # "knoe/sync_point_test.cpp",
     # "db/db_io_failure_test.cc",
     "db/error_handler_fs_test.cc",
   ],
@@ -558,8 +560,11 @@ cc_binary(
 cc_binary(
   name = "easy",
   srcs = [
-    # "knoe/easy.cc",
-    "knoe/recover_error_test.cpp",
+    # "knoe/options.cc",
+    # "knoe/recover_error_test.cpp",
+    # "knoe/mock_error.cpp",
+    # "knoe/auto_recover_error.cpp",
+    "knoe/try_happen.cpp",
   ],
   deps = [
     ":rocksdb"
