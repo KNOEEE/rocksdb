@@ -21,12 +21,8 @@ static const std::string rocksdb_build_date = "rocksdb_build_date:@GIT_DATE@";
 static const std::string rocksdb_build_date = "rocksdb_build_date:@BUILD_DATE@";
 #endif
 
-extern "C" {
-@ROCKSDB_PLUGIN_EXTERNS@
-} // extern "C"
-
-std::unordered_map<std::string, ROCKSDB_NAMESPACE::RegistrarFunc> ROCKSDB_NAMESPACE::ObjectRegistry::builtins_ = {
-  @ROCKSDB_PLUGIN_BUILTINS@
+// see https://github.com/facebook/rocksdb/commit/b7db7eae26f199f0942f60de48e97fd16ecc8959#diff-76ed074a9305c04054cdebb9e9aad2d818052b07091de1f20cad0bbac34ffb52R237
+std::unordered_map<std::string, ROCKSDB_NAMESPACE::RegistrarFunc> ROCKSDB_NAMESPACE::ObjectRegistry::builtins_ = {                                                                 
 };
 
 namespace ROCKSDB_NAMESPACE {

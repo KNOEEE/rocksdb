@@ -1208,6 +1208,124 @@ TEST_F(DBErrorHandlingFSTest, CorruptionError) {
   Destroy(options);
 }
 
+TEST_F(DBErrorHandlingFSTest, RecoverError) {
+  // setenv("KEEP_DB", "1", 0);
+  Options options = GetOptions(OptionConfig::kUncompressed);
+  options.create_if_missing = true;
+  options.statistics = CreateDBStatistics();
+  options.create_missing_column_families = true;
+  std::shared_ptr<SstFileManager> sst_file_manager(
+      NewSstFileManager(options.env));
+  options.sst_file_manager = sst_file_manager;
+  // DBOptions::max_bgerror_resume_count cannot 
+  // diasble auto recovery for SpaceLimit
+  std::shared_ptr<ErrorHandlerFSListener> listener =
+      std::make_shared<ErrorHandlerFSListener>();
+  // auto recover will check space with max_write_buffer_size
+  // so we use manual recover 
+  // also we can set SetMaxAllowedSpaceUsage to a large value and auto recovery
+  listener->EnableAutoRecovery(false);
+  options.listeners.emplace_back(listener);
+  
+  Status s;
+  DestroyAndReopen(options);
+
+  sst_file_manager->SetMaxAllowedSpaceUsage(2 << 10);
+  WriteOptions write_options = WriteOptions();
+  write_options.disableWAL = true;
+  // 2300B
+  for (int i = 0; i < 50; i++) {
+    ASSERT_OK(Put(Key(i), Key(i) + "v", write_options));
+  }
+  s = dbfull()->Flush(FlushOptions());
+  // ASSERT_OK(s);
+  // std::cout << sst_file_manager->GetTotalSize() << std::endl;
+  uint64_t db_size = sst_file_manager->GetTotalSize();
+  ASSERT_GT(db_size, 2 << 10);
+  ASSERT_EQ(s.severity(), ROCKSDB_NAMESPACE::Status::Severity::kHardError);
+  // std::cout << s.code() << " " << s.subcode() << std::endl;
+  ASSERT_EQ(s.code(), Status::Code::kIOError);
+  ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
+  ASSERT_EQ(sst_file_manager->IsMaxAllowedSpaceReached(), true);
+  ASSERT_EQ(sst_file_manager->IsMaxAllowedSpaceReachedIncludingCompactions(), 
+            true);
+  s = Put(Key(50), Key(50) + "v", write_options);
+  ASSERT_EQ(s.code(), Status::Code::kIOError);
+  ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
+  sst_file_manager->SetMaxAllowedSpaceUsage(100 << 10);
+  s = dbfull()->Resume();
+  ASSERT_OK(s);
+
+  ASSERT_EQ(listener->WaitForRecovery(5000000), true);
+
+  s = Put(Key(50), Key(50) + "v", write_options);
+  ASSERT_OK(s);
+
+  s = dbfull()->Flush(FlushOptions());
+
+  ASSERT_LT(db_size, sst_file_manager->GetTotalSize());
+  ASSERT_EQ(sst_file_manager->IsMaxAllowedSpaceReached(), false);
+  ASSERT_EQ(sst_file_manager->IsMaxAllowedSpaceReachedIncludingCompactions(), 
+            false);
+  ASSERT_OK(s);
+  Reopen(options);
+
+  ASSERT_EQ(Key(50) + "v", Get(Key(50)));
+
+  // Close();
+  DestroyDB(dbname_, options).PermitUncheckedError();
+}
+
+class StorageExtender : public rocksdb::EventListener
+{
+public:
+    StorageExtender(SpecialEnv* env):env_(env){}
+    SpecialEnv*  env_;
+    void OnErrorRecoveryBegin(
+        rocksdb::BackgroundErrorReason /*reason*/,
+        rocksdb::Status bg_error,
+        bool* /*auto_recovery*/
+    ) {
+        if (bg_error.IsNoSpace()) {
+            //recover from out-of-space errors
+            env_->no_space_.store(false, std::memory_order_release);
+        }
+    }
+    void OnErrorRecoveryCompleted(rocksdb::Status /*old_bg_error*/) {
+      TEST_SYNC_POINT("DBIOFailureTest::NoSpaceOnWriteWalAndRecovery recovered");
+    }
+};
+
+TEST_F(DBErrorHandlingFSTest, NoSpaceOnWriteWalAndRecovery) {
+  Options options = CurrentOptions();
+  options.env = env_;
+  options.listeners.push_back(std::make_shared<StorageExtender>(env_));
+  Reopen(options);
+
+  SyncPoint::GetInstance()->LoadDependency(
+      {{"DBIOFailureTest::NoSpaceOnWriteWalAndRecovery recovered",
+        "DBIOFailureTest::NoSpaceOnWriteWalAndRecovery retry"}});
+  SyncPoint::GetInstance()->EnableProcessing();
+  WriteBatch wb;
+  for (int i = 0; i < 5; ++i) {
+      wb.Put(Key(i), Key(i) + "value");
+  }
+
+  //Force out-of-space errors
+  env_->no_space_.store(true, std::memory_order_release);
+  WriteOptions wo;
+  Status s = dbfull()->Write(wo, &wb);
+  ASSERT_TRUE(s.IsIOError());
+  ASSERT_TRUE(s.IsNoSpace());
+
+  //Waiting for recovery from out-of-space error.
+  TEST_SYNC_POINT("DBIOFailureTest::NoSpaceOnWriteWalAndRecovery retry");
+  s = dbfull()->Write(wo, &wb);
+  // ASSERT_TRUE(s.ok());
+  std::cout << s.ToString() << std::endl;
+  SyncPoint::GetInstance()->DisableProcessing();
+}
+
 TEST_F(DBErrorHandlingFSTest, AutoRecoverFlushError) {
   if (mem_env_ != nullptr) {
     ROCKSDB_GTEST_SKIP("Test requires non-mock environment");
