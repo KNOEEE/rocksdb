@@ -347,6 +347,9 @@ Status DBImpl::FlushMemTableToOutputFile(
         error_handler_.SetBGError(s,
                                   BackgroundErrorReason::kManifestWriteNoWAL);
       } else {
+        ROCKS_LOG_WARN(immutable_db_options_.info_log,
+                       "[FlushMemTableToOutputFile] SetBGError %s",
+                       s.ToString().c_str());
         // If WAL sync is successful (either WAL size is 0 or there is no IO
         // error), all the other SST file write errors will be set as
         // kFlushNoWAL.

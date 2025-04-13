@@ -1244,6 +1244,7 @@ TEST_F(DBErrorHandlingFSTest, RecoverError) {
   ASSERT_GT(db_size, 2 << 10);
   ASSERT_EQ(s.severity(), ROCKSDB_NAMESPACE::Status::Severity::kHardError);
   // std::cout << s.code() << " " << s.subcode() << std::endl;
+  std::cout << s.ToString() << std::endl;
   ASSERT_EQ(s.code(), Status::Code::kIOError);
   ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
   ASSERT_EQ(sst_file_manager->IsMaxAllowedSpaceReached(), true);
@@ -1321,6 +1322,41 @@ TEST_F(DBErrorHandlingFSTest, NoSpaceOnWriteWalAndRecovery) {
   //Waiting for recovery from out-of-space error.
   TEST_SYNC_POINT("DBIOFailureTest::NoSpaceOnWriteWalAndRecovery retry");
   s = dbfull()->Write(wo, &wb);
+  // ASSERT_TRUE(s.ok());
+  std::cout << s.ToString() << std::endl;
+  SyncPoint::GetInstance()->DisableProcessing();
+}
+
+TEST_F(DBErrorHandlingFSTest, NoSpaceOnFlushAndRecovery) {
+  Options options = CurrentOptions();
+  options.env = env_;
+  options.listeners.push_back(std::make_shared<StorageExtender>(env_));
+  Reopen(options);
+
+  SyncPoint::GetInstance()->LoadDependency(
+      {{"DBIOFailureTest::NoSpaceOnWriteWalAndRecovery recovered",
+        "DBIOFailureTest::NoSpaceOnWriteWalAndRecovery retry"}});
+  SyncPoint::GetInstance()->EnableProcessing();
+  WriteBatch wb;
+  
+  for (int i = 0; i < 5; ++i) {
+      wb.Put(Key(i), Key(i) + "value");
+  }
+
+  WriteOptions write_options = WriteOptions();
+  write_options.disableWAL = true;
+  Status s = dbfull()->Write(write_options, &wb);
+  ASSERT_OK(s);
+  //Force out-of-space errors
+  env_->no_space_.store(true, std::memory_order_release);
+  s = dbfull()->Flush(FlushOptions());
+  std::cout << s.ToString() << std::endl;
+  // ASSERT_TRUE(s.IsIOError());
+  // ASSERT_TRUE(s.IsNoSpace());
+
+  //Waiting for recovery from out-of-space error.
+  TEST_SYNC_POINT("DBIOFailureTest::NoSpaceOnWriteWalAndRecovery retry");
+  s = dbfull()->Write(write_options, &wb);
   // ASSERT_TRUE(s.ok());
   std::cout << s.ToString() << std::endl;
   SyncPoint::GetInstance()->DisableProcessing();
