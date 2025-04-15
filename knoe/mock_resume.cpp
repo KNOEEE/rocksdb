@@ -1,0 +1,327 @@
+#include <unistd.h>
+
+#include <cstdio>
+#include <iostream>
+#include <memory>
+#include <queue>
+#include <string>
+
+#include "file/file_util.h"
+#include "rocksdb/compaction_filter.h"
+#include "rocksdb/db.h"
+#include "rocksdb/slice.h"
+#include "rocksdb/slice_transform.h"
+#include "rocksdb/sst_file_manager.h"
+#include "rocksdb/options.h"
+#include "test_util/sync_point.h"
+
+using namespace ROCKSDB_NAMESPACE;
+
+#if defined(OS_WIN)
+std::string kDBPath = "C:\\Windows\\TEMP\\rocksdb_simple_example";
+#else
+std::string kDBPath = "/dev/shm/rocksdb_simple_example";
+#endif
+
+class KeyCompactionFilter : public CompactionFilter {
+  public:
+    KeyCompactionFilter() = default;
+    bool Filter(int level, const Slice& key, const Slice& existing_value,
+                std::string* new_value, bool* value_changed) const override {
+      uint64_t num = std::stoul(key.ToString());
+      if (num < (1501 << 10)) {
+        return true;
+      } 
+      return false;
+    }
+    const char* Name() const override { return "Key-number-filter"; }
+};
+
+class StorageExtender : public rocksdb::EventListener {
+ private:
+  DB* db_{};
+  std::vector<ColumnFamilyHandle*> cfhs_;
+  Status PruneObsoleteSST() {
+    if (db_ == nullptr || cfhs_.empty()) {
+      return Status::Aborted("Bad StorageExtender member");
+    }
+    struct FileCreateOrder {
+      bool operator()(const SstFileMetaData* f1, const SstFileMetaData* f2) {
+        return f1->file_creation_time < f2->file_creation_time;
+      }
+    };
+    using SstHeap = 
+        std::priority_queue<const SstFileMetaData*, 
+                            std::vector<const SstFileMetaData*>, 
+                            FileCreateOrder>;
+    SstHeap heap;
+    int max_level = 0;
+    for (ColumnFamilyHandle* cf_handle : cfhs_) {
+      ColumnFamilyMetaData single_cf_meta;
+      db_->GetColumnFamilyMetaData(cf_handle, &single_cf_meta);
+      heap = SstHeap();
+      std::vector<std::string> files;
+      for (LevelMetaData& level_meta : single_cf_meta.levels) {
+        if (level_meta.level > max_level) { max_level = level_meta.level; }
+        for (const SstFileMetaData& file : level_meta.files) {
+          // std::cout << file.relative_filename << " " 
+          //           << (file.being_compacted ? " compacting" : "static") 
+          //           << std::endl;
+          if (file.being_compacted) continue;
+          heap.push(&file);
+        }
+      }
+      if (heap.empty()) continue;
+      // choose the earliest file
+      std::string relative_filename = heap.top()->relative_filename;
+      std::cout << "Ready to compact " << relative_filename << std::endl;
+      files.emplace_back(relative_filename);
+      Status s = db_->CompactFiles(
+          CompactionOptions(), cf_handle, files, max_level);
+      if (!s.ok()) return s;
+    }
+    return Status::OK();
+  }
+ public:
+  StorageExtender() = default;
+  explicit StorageExtender(DB*& db, std::vector<ColumnFamilyHandle*>& cf_handles) 
+      : db_(db), cfhs_(cf_handles) {}
+  void SetDB(DB* db) { db_ = db; }
+  void SetColumnFamilyHandles(std::vector<ColumnFamilyHandle*>& cf_handles) {
+    cfhs_ = cf_handles;
+  }
+  void OnBackgroundError(BackgroundErrorReason reason, 
+                         Status* bg_error) override {
+    std::cout << "OnBackgroundError: " << bg_error->ToString() << std::endl;
+
+    Status s = PruneObsoleteSST();
+    if (!s.ok()) {
+      std::cerr << "CompactRange error " << s.ToString() << std::endl;
+    } else {
+      std::cout << "CompactRange success\n";
+    }
+  }
+  void OnErrorRecoveryBegin(
+      rocksdb::BackgroundErrorReason reason,
+      rocksdb::Status bg_error,
+      bool* /*auto_recovery*/) override {
+    std::cout << "OnErrorRecoveryBegin:" << bg_error.ToString() << std::endl;
+    // Status s = PruneObsoleteSST();
+    // if (!s.ok()) {
+    //   std::cerr << "CompactRange error " << s.ToString() << std::endl;
+    // } else {
+    //   std::cout << "CompactRange success\n";
+    // }
+  }
+
+  void OnErrorRecoveryCompleted(rocksdb::Status old_bg_error) override {
+    std::cout << "Recovered from error:" 
+              << old_bg_error.ToString() << std::endl;
+    TEST_SYNC_POINT("StorageExtender::OnErrorRecoveryCompleted recovered");
+  }
+  void OnFlushBegin(DB* db, const FlushJobInfo& flush_job_info) override {
+    return;
+    std::cout << "OnFlushBegin TableProperties: \n";
+    // plaintable cannot get table properties
+    // std::cout << flush_job_info.table_properties.ToString() << std::endl;
+    ColumnFamilyHandle* cf_handle{};
+    for (ColumnFamilyHandle* cf_ : cfhs_) {
+      if (cf_->GetID() == flush_job_info.cf_id) {
+        cf_handle = cf_;
+        break;
+      }
+    }
+    if (cf_handle == nullptr) return;
+    // It means nothing to get mem size, due to imm has fixed size
+    // so we only check size of imm
+    uint64_t memtable_size;
+    db_->GetIntProperty(
+        cf_handle, "rocksdb.cur-size-active-mem-table", &memtable_size);
+    std::cout << "rocksdb.cur-size-active-mem-table: " 
+              << memtable_size << std::endl;
+    db_->GetIntProperty(
+        cf_handle, "rocksdb.cur-size-all-mem-tables", &memtable_size);
+    std::cout << "rocksdb.cur-size-all-mem-tables: "
+              << memtable_size << std::endl;
+    db_->GetIntProperty(
+        cf_handle, "rocksdb.size-all-mem-tables", &memtable_size);
+    std::cout << "rocksdb.size-all-mem-tables: "
+              << memtable_size << std::endl;
+  }
+};
+
+void PutBatch(DB* db, ColumnFamilyHandle*& cf, uint64_t key = 0) {
+  WriteBatch write_batch;
+  // write 1024 keys every call
+  for (uint64_t i = key << 10; i < (key << 10) + 1024; i++) {
+    auto kv = std::to_string(i);
+    write_batch.Put(cf, kv, kv);
+  }
+  static WriteOptions write_options = WriteOptions();
+  write_options.disableWAL = true;
+  Status s = db->Write(write_options, &write_batch);
+}
+
+void GetValue(DB* db, int k) {
+  std::string value;
+  Status s = db->Get(ReadOptions(), std::to_string(k), &value);
+  if (s.ok()) {
+    std::cout << "GetValue " << value << std::endl;
+  } else {
+    std::cerr << "GetValue error " << std::string(s.getState()) << std::endl;
+  }
+}
+
+void PrintDirSpace(std::string dir) {
+  std::shared_ptr<FileSystem> fs = FileSystem::Default();
+  uint64_t free_space = 0;
+  Status s = fs->GetFreeSpace(dir, IOOptions(), &free_space, nullptr);
+  std::cout << "free space is " << free_space << std::endl; 
+}
+
+void PrintSSTFileStatus(std::shared_ptr<SstFileManager>& sfm) {
+  std::cout << "GetTotalSize: ";
+  std::cout << sfm->GetTotalSize() << std::endl;
+  std::cout << "IsMaxAllowedSpaceReached: ";
+  std::cout << sfm->IsMaxAllowedSpaceReached() << std::endl;
+  std::cout << "IsMaxAllowedSpaceReachedIncludingCompactions: ";
+  std::cout << sfm->IsMaxAllowedSpaceReachedIncludingCompactions() << std::endl;
+}
+
+Status BuildDB(DB*& db, std::vector<ColumnFamilyHandle*>& cfhs, 
+               std::shared_ptr<SstFileManager>& sfm) {
+  Options options;
+  // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
+  options.IncreaseParallelism();
+  options.OptimizeLevelStyleCompaction(3 << 20);
+  // create the DB if it's not already present
+  options.create_if_missing = true;
+  options.create_missing_column_families = true;
+  options.compaction_filter = new KeyCompactionFilter();
+  std::shared_ptr<StorageExtender> listener = 
+      std::make_shared<StorageExtender>(db, cfhs);
+  options.listeners.emplace_back(listener);
+
+  std::shared_ptr<Logger> logger;
+  // declare in rocksdb/include/rocksdb/options.h
+  Status logger_s = CreateLoggerFromOptions(kDBPath, options, &logger);
+  sfm.reset(NewSstFileManager(options.env, logger));
+  options.sst_file_manager = sfm;
+
+  ColumnFamilyOptions cf_options; 
+  cf_options.cf_paths.emplace_back(
+      DbPath(kDBPath + "/" + kDefaultColumnFamilyName, 0));
+
+  cf_options.table_factory.reset(NewPlainTableFactory());
+  cf_options.prefix_extractor.reset(NewNoopTransform());
+  cf_options.write_buffer_size = 4 << 20;
+
+  std::vector<ColumnFamilyDescriptor> cf_desc;
+  cf_desc.emplace_back(kDefaultColumnFamilyName, cf_options);
+  for (int i = 0; i <= 1; i++) {
+    cf_options.cf_paths.clear();
+    cf_options.cf_paths.emplace_back(
+        DbPath(kDBPath + "/" + std::to_string(i), 0));
+    cf_desc.emplace_back(std::to_string(i), cf_options);
+  }
+  Status s = DB::Open(options, kDBPath, cf_desc, &cfhs, &db);
+  if (s.ok()) {
+    listener->SetDB(db);
+    listener->SetColumnFamilyHandles(cfhs);
+  }
+  return s;
+}
+
+int main() {
+  Status destroy_dir_status = DestroyDir(Env::Default(), kDBPath);
+  if (!destroy_dir_status.ok() && !destroy_dir_status.IsNotFound()) {
+    std::cout << "ERROR in file system\n";
+    return 0;
+  }
+
+  DB* db{};
+  std::vector<ColumnFamilyHandle *> handles;
+  std::shared_ptr<SstFileManager> sfm;
+  Status s = BuildDB(db, handles, sfm);
+  if (!s.ok()) {
+    std::cerr << "BuildDB error " << std::string(s.getState()) << std::endl;
+    return 0;
+  }
+  sfm->SetMaxAllowedSpaceUsage(40 << 20);
+
+  SyncPoint::GetInstance()->LoadDependency(
+      {{"StorageExtender::OnErrorRecoveryCompleted recovered",
+        "MockResume::main retry"}});
+  SyncPoint::GetInstance()->EnableProcessing();
+
+  for (ColumnFamilyHandle* cf_handle : handles) {
+    std::cout << "cf name " << cf_handle->GetName() << std::endl;
+    std::cout << "cf id " << cf_handle->GetID() << std::endl;
+    ColumnFamilyDescriptor cf_desc;
+    s = cf_handle->GetDescriptor(&cf_desc);
+    std::cout << "cf path " << cf_desc.options.cf_paths[0].path << std::endl;
+  }
+
+  for (int i = 0; i < 1500; i++) 
+    PutBatch(db, handles[1], i);
+  s = db->Flush(FlushOptions(), handles);
+  if (!s.ok()) {
+    std::cerr << "Flush 1st error " << std::string(s.getState()) << std::endl;
+  } else {
+    // 34MB
+    std::cout << "Flush 1st success\n";
+    // for (auto h : handles) {
+    //   db->DestroyColumnFamilyHandle(h);
+    // }
+    // delete db;
+    // return 0;
+  }
+  for (int i = 1500; i < 2000; i++) 
+    PutBatch(db, handles[1], i);
+  // This will fail
+  // But flush some data into sst
+  // So it should listen to flush events.
+  s = db->Flush(FlushOptions(), handles);
+  if (!s.ok()) {
+    std::cerr << "Flush 2nd error " << std::string(s.getState()) << std::endl;
+  } else {
+    std::cout << "Flush 2nd success\n";
+  }
+  PrintSSTFileStatus(sfm);
+  // This must fail due to Resume need exec flush one more time
+  // So we have to Compaction first 
+  // And this cannot use full compaction cause fullcompaction will auto compare
+  // keys in memtable and exec flush
+  // So we have to specify files took part in compaction
+  // s = db->CompactRange(
+  //     CompactRangeOptions(), handles[1], nullptr, nullptr);
+  // if (!s.ok()) {
+  //   std::cerr << "CompactRange error " << s.ToString() << std::endl;
+  // } else {
+  //   std::cout << "CompactRange success\n";
+  // }
+  s = db->Resume();
+  if (!s.ok()) {
+    std::cerr << "Resume error " << std::string(s.getState()) << std::endl;
+  } else {
+    std::cout << "Resume success\n";
+  }
+
+  // Waiting for recovery from out-of-space error.
+  TEST_SYNC_POINT("MockResume::main retry");
+
+  for (int i = 0; i < 150; i++) 
+    PutBatch(db, handles[1], i);
+  s = db->Flush(FlushOptions(), handles);
+  if (!s.ok()) {
+    std::cerr << "Flush error " << std::string(s.getState()) << std::endl;
+  } else {
+    std::cout << "Flush success\n";
+  }
+  PrintSSTFileStatus(sfm);
+
+  for (auto h : handles) {
+    db->DestroyColumnFamilyHandle(h);
+  }
+  delete db;
+}

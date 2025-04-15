@@ -562,9 +562,9 @@ cc_binary(
   srcs = [
     # "knoe/options.cc",
     # "knoe/recover_error_test.cpp",
-    # "knoe/mock_error.cpp",
+    "knoe/mock_resume.cpp",
     # "knoe/auto_recover_error.cpp",
-    "knoe/try_happen.cpp",
+    # "knoe/try_happen.cpp",
   ],
   deps = [
     ":rocksdb"
