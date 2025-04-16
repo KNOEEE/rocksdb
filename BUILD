@@ -541,7 +541,8 @@ cc_binary(
   srcs = [
     # "knoe/sync_point_test.cpp",
     # "db/db_io_failure_test.cc",
-    "db/error_handler_fs_test.cc",
+    # "db/error_handler_fs_test.cc",
+    "knoe/final_analyze.cpp",
   ],
   deps = [
     "@googletest//:gtest",

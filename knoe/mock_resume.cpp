@@ -37,13 +37,13 @@ class KeyCompactionFilter : public CompactionFilter {
     const char* Name() const override { return "Key-number-filter"; }
 };
 
-class StorageExtender : public rocksdb::EventListener {
+class StorageListener : public rocksdb::EventListener {
  private:
   DB* db_{};
   std::vector<ColumnFamilyHandle*> cfhs_;
   Status PruneObsoleteSST() {
     if (db_ == nullptr || cfhs_.empty()) {
-      return Status::Aborted("Bad StorageExtender member");
+      return Status::Aborted("Bad StorageListener member");
     }
     struct FileCreateOrder {
       bool operator()(const SstFileMetaData* f1, const SstFileMetaData* f2) {
@@ -83,8 +83,8 @@ class StorageExtender : public rocksdb::EventListener {
     return Status::OK();
   }
  public:
-  StorageExtender() = default;
-  explicit StorageExtender(DB*& db, std::vector<ColumnFamilyHandle*>& cf_handles) 
+  StorageListener() = default;
+  explicit StorageListener(DB*& db, std::vector<ColumnFamilyHandle*>& cf_handles) 
       : db_(db), cfhs_(cf_handles) {}
   void SetDB(DB* db) { db_ = db; }
   void SetColumnFamilyHandles(std::vector<ColumnFamilyHandle*>& cf_handles) {
@@ -117,7 +117,7 @@ class StorageExtender : public rocksdb::EventListener {
   void OnErrorRecoveryCompleted(rocksdb::Status old_bg_error) override {
     std::cout << "Recovered from error:" 
               << old_bg_error.ToString() << std::endl;
-    TEST_SYNC_POINT("StorageExtender::OnErrorRecoveryCompleted recovered");
+    TEST_SYNC_POINT("StorageListener::OnErrorRecoveryCompleted recovered");
   }
   void OnFlushBegin(DB* db, const FlushJobInfo& flush_job_info) override {
     return;
@@ -179,17 +179,17 @@ void PrintDirSpace(std::string dir) {
   std::cout << "free space is " << free_space << std::endl; 
 }
 
-void PrintSSTFileStatus(std::shared_ptr<SstFileManager>& sfm) {
+void PrintSSTFileStatus(std::shared_ptr<SstFileManager>& sst_manager) {
   std::cout << "GetTotalSize: ";
-  std::cout << sfm->GetTotalSize() << std::endl;
+  std::cout << sst_manager->GetTotalSize() << std::endl;
   std::cout << "IsMaxAllowedSpaceReached: ";
-  std::cout << sfm->IsMaxAllowedSpaceReached() << std::endl;
+  std::cout << sst_manager->IsMaxAllowedSpaceReached() << std::endl;
   std::cout << "IsMaxAllowedSpaceReachedIncludingCompactions: ";
-  std::cout << sfm->IsMaxAllowedSpaceReachedIncludingCompactions() << std::endl;
+  std::cout << sst_manager->IsMaxAllowedSpaceReachedIncludingCompactions() << std::endl;
 }
 
 Status BuildDB(DB*& db, std::vector<ColumnFamilyHandle*>& cfhs, 
-               std::shared_ptr<SstFileManager>& sfm) {
+               std::shared_ptr<SstFileManager>& sst_manager) {
   Options options;
   // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
   options.IncreaseParallelism();
@@ -198,15 +198,15 @@ Status BuildDB(DB*& db, std::vector<ColumnFamilyHandle*>& cfhs,
   options.create_if_missing = true;
   options.create_missing_column_families = true;
   options.compaction_filter = new KeyCompactionFilter();
-  std::shared_ptr<StorageExtender> listener = 
-      std::make_shared<StorageExtender>(db, cfhs);
+  std::shared_ptr<StorageListener> listener = 
+      std::make_shared<StorageListener>(db, cfhs);
   options.listeners.emplace_back(listener);
 
   std::shared_ptr<Logger> logger;
   // declare in rocksdb/include/rocksdb/options.h
   Status logger_s = CreateLoggerFromOptions(kDBPath, options, &logger);
-  sfm.reset(NewSstFileManager(options.env, logger));
-  options.sst_file_manager = sfm;
+  sst_manager.reset(NewSstFileManager(options.env, logger));
+  options.sst_file_manager = sst_manager;
 
   ColumnFamilyOptions cf_options; 
   cf_options.cf_paths.emplace_back(
@@ -241,16 +241,16 @@ int main() {
 
   DB* db{};
   std::vector<ColumnFamilyHandle *> handles;
-  std::shared_ptr<SstFileManager> sfm;
-  Status s = BuildDB(db, handles, sfm);
+  std::shared_ptr<SstFileManager> sst_manager;
+  Status s = BuildDB(db, handles, sst_manager);
   if (!s.ok()) {
     std::cerr << "BuildDB error " << std::string(s.getState()) << std::endl;
     return 0;
   }
-  sfm->SetMaxAllowedSpaceUsage(40 << 20);
+  sst_manager->SetMaxAllowedSpaceUsage(40 << 20);
 
   SyncPoint::GetInstance()->LoadDependency(
-      {{"StorageExtender::OnErrorRecoveryCompleted recovered",
+      {{"StorageListener::OnErrorRecoveryCompleted recovered",
         "MockResume::main retry"}});
   SyncPoint::GetInstance()->EnableProcessing();
 
@@ -287,7 +287,7 @@ int main() {
   } else {
     std::cout << "Flush 2nd success\n";
   }
-  PrintSSTFileStatus(sfm);
+  PrintSSTFileStatus(sst_manager);
   // This must fail due to Resume need exec flush one more time
   // So we have to Compaction first 
   // And this cannot use full compaction cause fullcompaction will auto compare
@@ -318,7 +318,7 @@ int main() {
   } else {
     std::cout << "Flush success\n";
   }
-  PrintSSTFileStatus(sfm);
+  PrintSSTFileStatus(sst_manager);
 
   for (auto h : handles) {
     db->DestroyColumnFamilyHandle(h);
