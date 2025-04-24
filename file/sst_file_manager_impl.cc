@@ -169,7 +169,7 @@ bool SstFileManagerImpl::EnoughRoomForCompaction(
       size_added_by_compaction += filemeta->fd.GetFileSize();
     }
   }
-
+  // std::cout << std::endl;
   // std::cout << "cur compaction reserved size: " << cur_compactions_reserved_size_ << std::endl;
   // std::cout << "size add by compaction: " << size_added_by_compaction << std::endl;
   // std::cout << "compact buffer size: " << compaction_buffer_size_ << std::endl;

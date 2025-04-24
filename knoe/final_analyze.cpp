@@ -86,6 +86,26 @@ class StorageListener : public rocksdb::EventListener {
     }
     return Status::OK();
   }
+  std::string BGErrorToString(BackgroundErrorReason reason) {
+    switch (reason) {
+    case rocksdb::BackgroundErrorReason::kFlush:
+      return "kFlush";
+    case rocksdb::BackgroundErrorReason::kCompaction:
+      return "kCompaction";
+    case rocksdb::BackgroundErrorReason::kWriteCallback:
+      return "kWriteCallback";
+    case rocksdb::BackgroundErrorReason::kMemTable:
+      return "kMemTable";
+    case rocksdb::BackgroundErrorReason::kManifestWrite:
+      return "kManifestWrite";
+    case rocksdb::BackgroundErrorReason::kFlushNoWAL:
+      return "kFlushNoWAL";
+    case rocksdb::BackgroundErrorReason::kManifestWriteNoWAL:
+      return "kManifestWriteNoWAL";
+    default:
+      return "OtherReason";
+    }
+  }
  public:
   StorageListener() = default;
   explicit StorageListener(DB*& db, std::vector<ColumnFamilyHandle*>& cf_handles) 
@@ -99,7 +119,8 @@ class StorageListener : public rocksdb::EventListener {
 
   void OnBackgroundError(BackgroundErrorReason reason, 
                          Status* bg_error) override {
-    std::cout << "OnBackgroundError: " << bg_error->ToString() << std::endl;
+    std::cout << "OnBackgroundError: " << bg_error->ToString() << " | Reason: " 
+              << BGErrorToString(reason) << std::endl;
     if (!active_resume_) return;
     Status s = PruneObsoleteSST();
     if (!s.ok()) {
@@ -331,7 +352,7 @@ TEST_F(SpaceLimitTest, SetMaxSpace) {
   ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
 }
 
-TEST_F(SpaceLimitTest, ShrinkCompactionSize) {
+TEST_F(SpaceLimitTest, ShrinkCompactionSizeOriginal) {
   InitOptions options;
   options.write_buffer_size = 4 << 20;
   Status s = BuildDB(options);
@@ -343,8 +364,7 @@ TEST_F(SpaceLimitTest, ShrinkCompactionSize) {
     PutBatch(cf_handles[1], i);
   s = db->Flush(FlushOptions(), cf_handles);
   ASSERT_TRUE(s.ok());
-  uint64_t sst_size = sst_manager->GetTotalSize();
-  ASSERT_LE(sst_size, 35 << 20);
+  ASSERT_LE(sst_manager->GetTotalSize(), 35 << 20);
   ASSERT_FALSE(sst_manager->IsMaxAllowedSpaceReached());
   ASSERT_FALSE(sst_manager->IsMaxAllowedSpaceReachedIncludingCompactions());
 
@@ -360,6 +380,71 @@ TEST_F(SpaceLimitTest, ShrinkCompactionSize) {
   s = db->Resume();
   ASSERT_TRUE(s.IsIOError());
   ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
+}
+
+TEST_F(SpaceLimitTest, ShrinkCompactionSize) {
+  InitOptions options;
+  options.write_buffer_size = 4 << 20;
+  options.optimized = true;
+  Status s = BuildDB(options);
+  ASSERT_TRUE(s.ok());
+  sst_manager->SetMaxAllowedSpaceUsage(40 << 20);
+
+  SyncPoint::GetInstance()->LoadDependency(
+      {{"StorageListener::OnErrorRecoveryCompleted recovered",
+        "SpaceLimitTest::ShrinkCompactionSize retry"}});
+  SyncPoint::GetInstance()->EnableProcessing();
+
+  for (int i = 0; i < 1500; i++) 
+    PutBatch(cf_handles[1], i);
+  s = db->Flush(FlushOptions(), cf_handles);
+  ASSERT_TRUE(s.IsIOError());
+  ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
+  ASSERT_GE(sst_manager->GetTotalSize(), 40 << 20);
+  ASSERT_TRUE(sst_manager->IsMaxAllowedSpaceReached());
+  ASSERT_TRUE(sst_manager->IsMaxAllowedSpaceReachedIncludingCompactions());
+
+  for (int i = 1500; i < 2000; i++) 
+    PutBatch(cf_handles[1], i);
+  s = db->Flush(FlushOptions(), cf_handles);
+
+  ASSERT_TRUE(s.IsIOError());
+  ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
+  ASSERT_GE(sst_manager->GetTotalSize(), 40 << 20);
+  ASSERT_TRUE(sst_manager->IsMaxAllowedSpaceReached());
+  ASSERT_TRUE(sst_manager->IsMaxAllowedSpaceReachedIncludingCompactions());
+
+  s = db->Resume();
+
+  ASSERT_TRUE(s.ok());
+
+  // Waiting for recovery from error.
+  TEST_SYNC_POINT("SpaceLimitTest::ShrinkCompactionSize retry");
+  PutBatch(cf_handles[1], 2000);
+  s = db->Flush(FlushOptions(), cf_handles);
+  ASSERT_TRUE(s.ok());
+  ASSERT_LE(sst_manager->GetTotalSize(), 35 << 20);
+  ASSERT_FALSE(sst_manager->IsMaxAllowedSpaceReached());
+  ASSERT_FALSE(sst_manager->IsMaxAllowedSpaceReachedIncludingCompactions());
+
+  std::string value;
+  s = db->Get(ReadOptions(), cf_handles[1], std::to_string(2000 << 10), &value);
+  ASSERT_TRUE(s.ok());
+  ASSERT_EQ(value, std::to_string(2000 << 10));
+}
+
+// Test: it must fail due to not enough room
+TEST_F(SpaceLimitTest, CompactionRoom) {
+  Status s = BuildDB();
+  sst_manager->SetMaxAllowedSpaceUsage(64 << 20);
+  for (int i = 0; i < 1500; i++) 
+    PutBatch(cf_handles[1], i);
+  s = db->Flush(FlushOptions(), cf_handles);
+  ASSERT_LE(sst_manager->GetTotalSize(), 35 << 20);
+  ASSERT_FALSE(sst_manager->IsMaxAllowedSpaceReached());
+  ASSERT_FALSE(sst_manager->IsMaxAllowedSpaceReachedIncludingCompactions());
+  s = db->CompactRange(CompactRangeOptions(), cf_handles[1], nullptr, nullptr);
+  ASSERT_TRUE(s.IsCompactionTooLarge());
 }
 
 int main(int argc, char* argv[]) {
