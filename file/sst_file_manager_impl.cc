@@ -171,10 +171,10 @@ bool SstFileManagerImpl::EnoughRoomForCompaction(
   }
   // std::cout << std::endl;
   // std::cout << "cur compaction reserved size: " << cur_compactions_reserved_size_ << std::endl;
-  // std::cout << "size add by compaction: " << size_added_by_compaction << std::endl;
+  std::cout << "size add by compaction: " << size_added_by_compaction << std::endl;
   // std::cout << "compact buffer size: " << compaction_buffer_size_ << std::endl;
   // std::cout << "total file size: " << total_files_size_ << std::endl;
-  // std::cout << "max allowed space: " << max_allowed_space_ << std::endl;
+  std::cout << "max allowed space: " << max_allowed_space_ << std::endl;
   // Update cur_compactions_reserved_size_ so concurrent compaction
   // don't max out space
   size_t needed_headroom = cur_compactions_reserved_size_ +

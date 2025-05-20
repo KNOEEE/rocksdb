@@ -307,6 +307,7 @@ TEST_F(SpaceLimitTest, Reiteration) {
     PutBatch(cf_handles[1], i);
   s = db->Flush(FlushOptions(), cf_handles);
   ASSERT_TRUE(s.IsIOError());
+  ASSERT_EQ(s.severity(), Status::Severity::kFatalError);
   ASSERT_EQ(s.subcode(), 0);
   ASSERT_EQ(s.ToString(), "IO error: Writer has previous error.");
   ASSERT_EQ(sst_size, sst_manager->GetTotalSize());
@@ -315,6 +316,7 @@ TEST_F(SpaceLimitTest, Reiteration) {
 
   s = db->Resume();
   ASSERT_TRUE(s.IsIOError());
+  ASSERT_EQ(s.severity(), Status::Severity::kFatalError);
   ASSERT_EQ(s.subcode(), 0);
   ASSERT_EQ(s.ToString(), "IO error: Writer has previous error.");
 }
@@ -337,6 +339,7 @@ TEST_F(SpaceLimitTest, SetMaxSpace) {
     PutBatch(cf_handles[1], i);
   s = db->Flush(FlushOptions(), cf_handles);
   ASSERT_TRUE(s.IsIOError());
+  ASSERT_EQ(s.severity(), Status::Severity::kHardError);
   ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
   ASSERT_GE(sst_manager->GetTotalSize(), 40 << 20);
   ASSERT_TRUE(sst_manager->IsMaxAllowedSpaceReached());
@@ -344,11 +347,13 @@ TEST_F(SpaceLimitTest, SetMaxSpace) {
 
   s = db->Resume();
   ASSERT_TRUE(s.IsIOError());
+  ASSERT_EQ(s.severity(), Status::Severity::kNoError);
   ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
 
   s = db->CompactRange(
       CompactRangeOptions(), cf_handles[1], nullptr, nullptr);
   ASSERT_TRUE(s.IsIOError());
+  ASSERT_EQ(s.severity(), Status::Severity::kHardError);
   ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
 }
 
@@ -372,6 +377,7 @@ TEST_F(SpaceLimitTest, ShrinkCompactionSizeOriginal) {
     PutBatch(cf_handles[1], i);
   s = db->Flush(FlushOptions(), cf_handles);
   ASSERT_TRUE(s.IsIOError());
+  ASSERT_EQ(s.severity(), Status::Severity::kHardError);
   ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
   ASSERT_GE(sst_manager->GetTotalSize(), 40 << 20);
   ASSERT_TRUE(sst_manager->IsMaxAllowedSpaceReached());
@@ -379,6 +385,7 @@ TEST_F(SpaceLimitTest, ShrinkCompactionSizeOriginal) {
 
   s = db->Resume();
   ASSERT_TRUE(s.IsIOError());
+  ASSERT_EQ(s.severity(), Status::Severity::kNoError);
   ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
 }
 
@@ -399,6 +406,7 @@ TEST_F(SpaceLimitTest, ShrinkCompactionSize) {
     PutBatch(cf_handles[1], i);
   s = db->Flush(FlushOptions(), cf_handles);
   ASSERT_TRUE(s.IsIOError());
+  ASSERT_EQ(s.severity(), Status::Severity::kHardError);
   ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
   ASSERT_GE(sst_manager->GetTotalSize(), 40 << 20);
   ASSERT_TRUE(sst_manager->IsMaxAllowedSpaceReached());
@@ -409,6 +417,7 @@ TEST_F(SpaceLimitTest, ShrinkCompactionSize) {
   s = db->Flush(FlushOptions(), cf_handles);
 
   ASSERT_TRUE(s.IsIOError());
+  ASSERT_EQ(s.severity(), Status::Severity::kHardError);
   ASSERT_EQ(s.subcode(), Status::SubCode::kSpaceLimit);
   ASSERT_GE(sst_manager->GetTotalSize(), 40 << 20);
   ASSERT_TRUE(sst_manager->IsMaxAllowedSpaceReached());
@@ -443,8 +452,16 @@ TEST_F(SpaceLimitTest, CompactionRoom) {
   ASSERT_LE(sst_manager->GetTotalSize(), 35 << 20);
   ASSERT_FALSE(sst_manager->IsMaxAllowedSpaceReached());
   ASSERT_FALSE(sst_manager->IsMaxAllowedSpaceReachedIncludingCompactions());
-  s = db->CompactRange(CompactRangeOptions(), cf_handles[1], nullptr, nullptr);
+
+  CompactRangeOptions options = CompactRangeOptions();
+  s = db->CompactRange(options, cf_handles[1], nullptr, nullptr);
   ASSERT_TRUE(s.IsCompactionTooLarge());
+  ASSERT_EQ(s.severity(), Status::Severity::kNoError);
+
+  options.max_subcompactions = 12;
+  s = db->CompactRange(options, cf_handles[1], nullptr, nullptr);
+  ASSERT_TRUE(s.IsCompactionTooLarge());
+  ASSERT_EQ(s.severity(), Status::Severity::kNoError);
 }
 
 int main(int argc, char* argv[]) {
