@@ -464,6 +464,23 @@ TEST_F(SpaceLimitTest, CompactionRoom) {
   ASSERT_EQ(s.severity(), Status::Severity::kNoError);
 }
 
+TEST_F(SpaceLimitTest, ScanPlain) {
+  Status s = BuildDB();
+  for (int i = 0; i < 1500; i++) 
+    PutBatch(cf_handles[1], i);
+  s = db->Flush(FlushOptions(), cf_handles);
+  Iterator* iter = db->NewIterator(ReadOptions(), cf_handles[1]);
+  int count = 0;
+  for (iter->SeekToFirst(); iter->Valid() && count < 10; iter->Next()) {
+    std::cout << iter->key().ToString() << std::endl;
+    count++;
+  }
+  // Note: This must delete iter here, otherwise iter will still be a Reference
+  // for ColumnFamilyData:1. ColumnFamilyData::UnrefAndTryDelete will return
+  // false, and ~ColumnFamilySet() will fail.
+  delete iter;
+}
+
 int main(int argc, char* argv[]) {
   testing::InitGoogleTest(&argc, argv);
   gflags::ParseCommandLineFlags(&argc, &argv, true);
