@@ -540,9 +540,10 @@ cc_binary(
   name = "t",
   srcs = [
     # "knoe/sync_point_test.cpp",
-    # "db/db_io_failure_test.cc",
+    # "knoe/import_size_test.cpp",
+    "db/import_column_family_test.cc",
     # "db/error_handler_fs_test.cc",
-    "knoe/final_analyze.cpp",
+    # "knoe/final_analyze.cpp",
   ],
   deps = [
     "@googletest//:gtest",

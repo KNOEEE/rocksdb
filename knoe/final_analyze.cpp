@@ -230,6 +230,7 @@ public:
     std::vector<ColumnFamilyDescriptor> cf_desc;
     cf_desc.emplace_back(kDefaultColumnFamilyName, cf_options);
     for (int i = 0; i <= 1; i++) {
+      // Every cf corresponds with 1 cf_options. clear() is required.
       cf_options.cf_paths.clear();
       cf_options.cf_paths.emplace_back(
           DbPath(kDBPath + "/" + std::to_string(i), 0));
